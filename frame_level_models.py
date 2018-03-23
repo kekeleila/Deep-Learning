@@ -89,7 +89,7 @@ class FrameLevelNNModelLateFusion(models.BaseModel):
 
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
         start_frame = tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 1, 1024]), perm=[0, 2, 1])
-        late_frame = tf.transpose(tf.slice(model_input, [14, 0, 0], [1, 1, 1024]), perm=[0, 2, 1])
+        late_frame = tf.transpose(tf.slice(model_input, [0, 14, 0], [1, 1, 1024]), perm=[0, 2, 1])
         start_frame_output = create_layers(start_frame)
         late_frame_output = create_layers(late_frame)
         fc_input = tf.concat([start_frame_output, late_frame_output], 1)
@@ -134,7 +134,19 @@ class FrameLevelNNModelSlowFusion(models.BaseModel):
                                       weights_regularizer=slim.l2_regularizer(1e-8))
         return {"predictions": output}
 
-
+class FrameLevelNNModelTwoStreams(models.BaseModel):
+    def create_model(self, model_input, vocab_size, num_frames, **unused_params):
+        model_input = tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 1, 1024]), perm=[0, 2, 1])
+        high_stream_input = tf.slice(model_input, [0, 255, 0], [1, 512, 1])
+        low_stream_input = tf.strided_slice(model_input, [0,0,0], [1,1023,1],[1,2,1] )
+        high_stream_output = create_layers(high_stream_input)
+        low_stream_output = create_layers(low_stream_input)
+        fc_input = tf.concat([high_stream_output, low_stream_output], 1)
+        fc1 = tf.layers.dense(fc_input, 4096, activation=tf.nn.relu)
+        fc2 = tf.layers.dense(fc1, 4096, activation=tf.nn.relu)
+        output = slim.fully_connected(fc2, vocab_size, activation_fn=tf.nn.sigmoid,
+                                      weights_regularizer=slim.l2_regularizer(1e-8))
+        return {"predictions": output}
 
 class FrameLevelLogisticModel(models.BaseModel):
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
