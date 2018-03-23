@@ -56,7 +56,7 @@ if __name__ == "__main__":
       "features. The model must also be set appropriately (i.e. to read 3D "
       "batches VS 4D batches.")
   flags.DEFINE_string(
-      "model", "LogisticModel",
+      "model", "NNModel",
       "Which architecture to use for the model. Models are defined "
       "in models.py.")
   flags.DEFINE_bool(
