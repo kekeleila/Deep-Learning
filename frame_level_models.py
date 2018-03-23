@@ -47,17 +47,84 @@ flags.DEFINE_integer("lstm_cells", 1024, "Number of LSTM cells.")
 flags.DEFINE_integer("lstm_layers", 2, "Number of LSTM layers.")
 
 
+def create_layers(layer_input):
+    conv1 = tf.layers.conv1d(layer_input, kernel_size=11, filters=96, strides=3, padding='SAME',
+                             activation=tf.nn.relu)
+    norm1 = tf.nn.local_response_normalization(tf.expand_dims(conv1, 3), 5, 2, 10e-4, 0.5)
+    norm1 = tf.squeeze(norm1, 3)
+    pool1 = tf.layers.max_pooling1d(norm1, pool_size=2, strides=2)
+    conv2 = tf.layers.conv1d(pool1, kernel_size=5, filters=256, strides=1, padding='SAME', activation=tf.nn.relu)
+    norm2 = tf.nn.local_response_normalization(tf.expand_dims(conv2, 3), 5, 2, 10e-4, 0.5)
+    norm2 = tf.squeeze(norm2, 3)
+    pool2 = tf.layers.max_pooling1d(norm2, pool_size=2, strides=2)
+    conv3 = tf.layers.conv1d(pool2, kernel_size=3, filters=384, strides=1, padding='SAME', activation=tf.nn.relu)
+    conv4 = tf.layers.conv1d(conv3, kernel_size=3, filters=384, strides=1, padding='SAME', activation=tf.nn.relu)
+    conv5 = tf.layers.conv1d(conv4, kernel_size=3, filters=256, strides=1, padding='SAME', activation=tf.nn.relu)
+    pool3 = tf.layers.max_pooling1d(conv5, pool_size=2, strides=2)
+    return pool3
+
 class FrameLevelNNModelSingleFrame(models.BaseModel):
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
-        conv1 = tf.layers.conv1d(model_input, kernel_size = 11, filters=96 , strides=3, padding='SAME',activation=tf.nn.relu)
-        norm1 = tf.nn.local_response_normalization(tf.expand_dims(conv1, 3), 5, 2, 10e-4, 0.5 )
+        model_input = tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 1, 1024]), perm=[0, 2, 1])
+        pool3 = create_layers(model_input)
+        fc1 = tf.layers.dense(pool3, 4096, activation=tf.nn.relu)
+        fc2 = tf.layers.dense(fc1, 4096, activation=tf.nn.relu)
+        output = slim.fully_connected(fc2, vocab_size, activation_fn=tf.nn.sigmoid,
+                                      weights_regularizer=slim.l2_regularizer(1e-8))
+        return {"predictions": output}
+
+
+class FrameLevelNNModelEarlyFusion(models.BaseModel):
+    def create_model(self, model_input, vocab_size, num_frames, **unused_params):
+        model_input = tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 10, 1024]), perm=[0, 2, 1])
+        pool3 = create_layers(model_input)
+        fc1 = tf.layers.dense(pool3, 4096, activation=tf.nn.relu)
+        fc2 = tf.layers.dense(fc1, 4096, activation=tf.nn.relu)
+        output = slim.fully_connected(fc2, vocab_size, activation_fn=tf.nn.sigmoid,
+                                      weights_regularizer=slim.l2_regularizer(1e-8))
+        return {"predictions": output}
+
+
+class FrameLevelNNModelLateFusion(models.BaseModel):
+
+    def create_model(self, model_input, vocab_size, num_frames, **unused_params):
+        start_frame = tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 1, 1024]), perm=[0, 2, 1])
+        late_frame = tf.transpose(tf.slice(model_input, [14, 0, 0], [1, 1, 1024]), perm=[0, 2, 1])
+        start_frame_output = create_layers(start_frame)
+        late_frame_output = create_layers(late_frame)
+        fc_input = tf.concat([start_frame_output, late_frame_output], 1)
+
+        fc1 = tf.layers.dense(fc_input, 4096, activation=tf.nn.relu)
+        fc2 = tf.layers.dense(fc1, 4096, activation=tf.nn.relu)
+        output = slim.fully_connected(fc2, vocab_size, activation_fn=tf.nn.sigmoid,
+                                      weights_regularizer=slim.l2_regularizer(1e-8))
+        return {"predictions": output}
+
+class FrameLevelNNModelSlowFusion(models.BaseModel):
+    def layerBulk(self, layer_input):
+        conv1 = tf.layers.conv1d(layer_input, kernel_size=11, filters=96, strides=3, padding='SAME',
+                                 activation=tf.nn.relu)
+        norm1 = tf.nn.local_response_normalization(tf.expand_dims(conv1, 3), 5, 2, 10e-4, 0.5)
         norm1 = tf.squeeze(norm1, 3)
-        pool1= tf.layers.max_pooling1d(norm1,pool_size=2, strides=2)
-        conv2 = tf.layers.conv1d(pool1,kernel_size=5, filters=256, strides=1, padding='SAME', activation=tf.nn.relu)
-        norm2 = tf.nn.local_response_normalization(tf.expand_dims(conv2, 3), 5, 2, 10e-4, 0.5)
-        norm2 = tf.squeeze(norm2, 3)
-        pool2 = tf.layers.max_pooling1d(norm2, pool_size=2, strides=2)
-        conv3 = tf.layers.conv1d(pool2, kernel_size=3, filters=384, strides=1, padding='SAME', activation=tf.nn.relu)
+        pool1 = tf.layers.max_pooling1d(norm1, pool_size=2, strides=2)
+        return pool1
+
+
+    def create_model(self, model_input, vocab_size, num_frames, **unused_params):
+        bulks1Inputs = []
+        bulks1Inputs.append(tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 4, 1024]), perm=[0, 2, 1]))
+        bulks1Inputs.append(tf.transpose(tf.slice(model_input, [0, 1, 0], [1, 4, 1024]), perm=[0, 2, 1]))
+        bulks1Inputs.append(tf.transpose(tf.slice(model_input, [0, 2, 0], [1, 4, 1024]), perm=[0, 2, 1]))
+        bulks1Inputs.append(tf.transpose(tf.slice(model_input, [0, 3, 0], [1, 4, 1024]), perm=[0, 2, 1]))
+        bulks1 = []
+        for input in bulks1Inputs:
+            bulks1.append(self.layerBulk(input))
+        bulks2Input1 = tf.concat([bulks1[0], bulks1[1]], 1)
+        bulks2Input2 = tf.concat([bulks1[2], bulks1[3]], 1)
+        bulks2Output1 = self.layerBulk(bulks2Input1)
+        bulks2Output2 = self.layerBulk(bulks2Input2)
+        bulks3Input = tf.concat([bulks2Output1, bulks2Output2], 1)
+        conv3 = tf.layers.conv1d(bulks3Input, kernel_size=3, filters=384, strides=1, padding='SAME', activation=tf.nn.relu)
         conv4 = tf.layers.conv1d(conv3, kernel_size=3, filters=384, strides=1, padding='SAME', activation=tf.nn.relu)
         conv5 = tf.layers.conv1d(conv4, kernel_size=3, filters=256, strides=1, padding='SAME', activation=tf.nn.relu)
         pool3 = tf.layers.max_pooling1d(conv5, pool_size=2, strides=2)
@@ -66,6 +133,7 @@ class FrameLevelNNModelSingleFrame(models.BaseModel):
         output = slim.fully_connected(fc2, vocab_size, activation_fn=tf.nn.sigmoid,
                                       weights_regularizer=slim.l2_regularizer(1e-8))
         return {"predictions": output}
+
 
 
 class FrameLevelLogisticModel(models.BaseModel):
