@@ -21,6 +21,7 @@ import models
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
 import video_level_models
+from PIL import Image
 from tensorflow import flags
 
 FLAGS = flags.FLAGS
@@ -47,7 +48,7 @@ flags.DEFINE_integer("lstm_cells", 1024, "Number of LSTM cells.")
 flags.DEFINE_integer("lstm_layers", 2, "Number of LSTM layers.")
 
 
-def create_layers(layer_input):
+def create_1Dlayers(layer_input):
     conv1 = tf.layers.conv1d(layer_input, kernel_size=11, filters=96, strides=3, padding='SAME',
                              activation=tf.nn.relu)
     norm1 = tf.nn.local_response_normalization(tf.expand_dims(conv1, 3), 5, 2, 10e-4, 0.5)
@@ -63,42 +64,86 @@ def create_layers(layer_input):
     pool3 = tf.layers.max_pooling1d(conv5, pool_size=2, strides=2)
     return pool3
 
+
+def create_2Dlayers(layer_input):
+    conv1 = tf.layers.conv2d(layer_input, kernel_size=11, filters=96, strides=(3, 3), padding='SAME',
+                             activation=tf.nn.relu)
+    norm1 = tf.nn.local_response_normalization(conv1, 5, 2, 10e-4, 0.5)
+    pool1 = tf.layers.max_pooling2d(norm1, pool_size=2, strides=(2, 2))
+    conv2 = tf.layers.conv2d(pool1, kernel_size=5, filters=256, strides=(1, 1), padding='SAME', activation=tf.nn.relu)
+    norm2 = tf.nn.local_response_normalization(conv2, 5, 2, 10e-4, 0.5)
+    pool2 = tf.layers.max_pooling2d(norm2, pool_size=2, strides=(2, 2))
+    conv3 = tf.layers.conv2d(pool2, kernel_size=3, filters=384, strides=(1, 1), padding='SAME', activation=tf.nn.relu)
+    conv4 = tf.layers.conv2d(conv3, kernel_size=3, filters=384, strides=(1, 1), padding='SAME', activation=tf.nn.relu)
+    conv5 = tf.layers.conv2d(conv4, kernel_size=3, filters=256, strides=(1, 1), padding='SAME', activation=tf.nn.relu)
+    pool3 = tf.layers.max_pooling2d(conv5, pool_size=2, strides=(2, 2))
+    return pool3
+
+
+def compute_output(last_pooling_layer, vocab_size):
+    fc1 = tf.layers.dense(last_pooling_layer, 4096, activation=tf.nn.relu)
+    fc2 = tf.layers.dense(fc1, 4096, activation=tf.nn.relu)
+    output = slim.fully_connected(fc2, vocab_size, activation_fn=tf.nn.sigmoid,
+                                  weights_regularizer=slim.l2_regularizer(1e-8))
+    return output
+
+
 class FrameLevelNNModelSingleFrame(models.BaseModel):
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
         model_input = tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 1, 1024]), perm=[0, 2, 1])
-        pool3 = create_layers(model_input)
-        fc1 = tf.layers.dense(pool3, 4096, activation=tf.nn.relu)
-        fc2 = tf.layers.dense(fc1, 4096, activation=tf.nn.relu)
-        output = slim.fully_connected(fc2, vocab_size, activation_fn=tf.nn.sigmoid,
-                                      weights_regularizer=slim.l2_regularizer(1e-8))
+        pool3 = create_1Dlayers(model_input)
+        output = compute_output(pool3, vocab_size)
         return {"predictions": output}
+
+
+class FrameLevelNNModelSingleFrame2D(models.BaseModel):
+    def create_model(self, model_input, vocab_size, num_frames, **unused_params):
+
+        model_input = tf.reshape(tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 1, 1024]), perm=[0, 2, 1]),
+                                 [1, 32, 32, 1])
+        pool3 = create_2Dlayers(model_input)
+        output = compute_output(pool3, vocab_size)
+        return {"predictions": output}
+
+class FrameLevelRNN(models.BaseModel):
+    def create_model(self, model_input, vocab_size, num_frames, **unused_params):
+        rnn_input = []
+        for i in range(40):
+            frame = tf.transpose(tf.slice(model_input, [0, i, 0], [1, 1, 1024]), perm=[0, 2, 1])
+            pool = create_1Dlayers(frame)
+            rnn_input.append(pool)
+        rnn_input = tf.squeeze(rnn_input,1)
+        nodes = tf.contrib.rnn.BasicLSTMCell(384)
+        rnn_input = tf.unstack(rnn_input)
+        output, final_state = tf.contrib.rnn.static_rnn(cell=nodes,dtype=tf.float32,
+                           inputs=rnn_input)
+        output = tf.stack(output)
+        output = output[:,-1,:]
+        output = tf.layers.dense(output, vocab_size, activation=tf.nn.relu)
+        return {"predictions": output}
+
+
 
 
 class FrameLevelNNModelEarlyFusion(models.BaseModel):
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
         model_input = tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 10, 1024]), perm=[0, 2, 1])
-        pool3 = create_layers(model_input)
-        fc1 = tf.layers.dense(pool3, 4096, activation=tf.nn.relu)
-        fc2 = tf.layers.dense(fc1, 4096, activation=tf.nn.relu)
-        output = slim.fully_connected(fc2, vocab_size, activation_fn=tf.nn.sigmoid,
-                                      weights_regularizer=slim.l2_regularizer(1e-8))
+        pool3 = create_1Dlayers(model_input)
+        output = compute_output(pool3, vocab_size)
         return {"predictions": output}
 
 
 class FrameLevelNNModelLateFusion(models.BaseModel):
-
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
         start_frame = tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 1, 1024]), perm=[0, 2, 1])
         late_frame = tf.transpose(tf.slice(model_input, [0, 14, 0], [1, 1, 1024]), perm=[0, 2, 1])
-        start_frame_output = create_layers(start_frame)
-        late_frame_output = create_layers(late_frame)
+        start_frame_output = create_1Dlayers(start_frame)
+        late_frame_output = create_1Dlayers(late_frame)
         fc_input = tf.concat([start_frame_output, late_frame_output], 1)
+        output = compute_output(fc_input, vocab_size)
 
-        fc1 = tf.layers.dense(fc_input, 4096, activation=tf.nn.relu)
-        fc2 = tf.layers.dense(fc1, 4096, activation=tf.nn.relu)
-        output = slim.fully_connected(fc2, vocab_size, activation_fn=tf.nn.sigmoid,
-                                      weights_regularizer=slim.l2_regularizer(1e-8))
         return {"predictions": output}
+
 
 class FrameLevelNNModelSlowFusion(models.BaseModel):
     def layerBulk(self, layer_input):
@@ -108,7 +153,6 @@ class FrameLevelNNModelSlowFusion(models.BaseModel):
         norm1 = tf.squeeze(norm1, 3)
         pool1 = tf.layers.max_pooling1d(norm1, pool_size=2, strides=2)
         return pool1
-
 
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
         bulks1Inputs = []
@@ -124,29 +168,26 @@ class FrameLevelNNModelSlowFusion(models.BaseModel):
         bulks2Output1 = self.layerBulk(bulks2Input1)
         bulks2Output2 = self.layerBulk(bulks2Input2)
         bulks3Input = tf.concat([bulks2Output1, bulks2Output2], 1)
-        conv3 = tf.layers.conv1d(bulks3Input, kernel_size=3, filters=384, strides=1, padding='SAME', activation=tf.nn.relu)
+        conv3 = tf.layers.conv1d(bulks3Input, kernel_size=3, filters=384, strides=1, padding='SAME',
+                                 activation=tf.nn.relu)
         conv4 = tf.layers.conv1d(conv3, kernel_size=3, filters=384, strides=1, padding='SAME', activation=tf.nn.relu)
         conv5 = tf.layers.conv1d(conv4, kernel_size=3, filters=256, strides=1, padding='SAME', activation=tf.nn.relu)
         pool3 = tf.layers.max_pooling1d(conv5, pool_size=2, strides=2)
-        fc1 = tf.layers.dense(pool3, 4096, activation=tf.nn.relu)
-        fc2 = tf.layers.dense(fc1, 4096, activation=tf.nn.relu)
-        output = slim.fully_connected(fc2, vocab_size, activation_fn=tf.nn.sigmoid,
-                                      weights_regularizer=slim.l2_regularizer(1e-8))
+        output = compute_output(pool3, vocab_size)
         return {"predictions": output}
+
 
 class FrameLevelNNModelTwoStreams(models.BaseModel):
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
         model_input = tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 1, 1024]), perm=[0, 2, 1])
         high_stream_input = tf.slice(model_input, [0, 255, 0], [1, 512, 1])
-        low_stream_input = tf.strided_slice(model_input, [0,0,0], [1,1023,1],[1,2,1] )
-        high_stream_output = create_layers(high_stream_input)
-        low_stream_output = create_layers(low_stream_input)
+        low_stream_input = tf.strided_slice(model_input, [0, 0, 0], [1, 1023, 1], [1, 2, 1])
+        high_stream_output = create_1Dlayers(high_stream_input)
+        low_stream_output = create_1Dlayers(low_stream_input)
         fc_input = tf.concat([high_stream_output, low_stream_output], 1)
-        fc1 = tf.layers.dense(fc_input, 4096, activation=tf.nn.relu)
-        fc2 = tf.layers.dense(fc1, 4096, activation=tf.nn.relu)
-        output = slim.fully_connected(fc2, vocab_size, activation_fn=tf.nn.sigmoid,
-                                      weights_regularizer=slim.l2_regularizer(1e-8))
+        output = compute_output(fc_input, vocab_size)
         return {"predictions": output}
+
 
 class FrameLevelLogisticModel(models.BaseModel):
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
