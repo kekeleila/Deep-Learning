@@ -81,7 +81,7 @@ if __name__ == "__main__":
   flags.DEFINE_float("learning_rate_decay_examples", 4000000,
                      "Multiply current learning rate by learning_rate_decay "
                      "every learning_rate_decay_examples.")
-  flags.DEFINE_integer("num_epochs", 5,
+  flags.DEFINE_integer("num_epochs", 20,
                        "How many passes to make over the dataset before "
                        "halting training.")
   flags.DEFINE_integer("max_steps", None,
@@ -168,8 +168,8 @@ def get_input_data_tensors(reader,
     return tf.train.shuffle_batch_join(
         training_data,
         batch_size=batch_size,
-        capacity=batch_size * 5,
-        min_after_dequeue=batch_size,
+        capacity=batch_size * 10,
+        min_after_dequeue=512,
         allow_smaller_final_batch=True,
         enqueue_many=True)
 
@@ -183,7 +183,7 @@ def build_graph(reader,
                 model,
                 train_data_pattern,
                 label_loss_fn=losses.CrossEntropyLoss(),
-                batch_size=1000,
+                batch_size=1024,
                 base_learning_rate=0.01,
                 learning_rate_decay_examples=1000000,
                 learning_rate_decay=0.95,
@@ -266,6 +266,7 @@ def build_graph(reader,
     with tf.device(device_string % i):
       with (tf.variable_scope(("tower"), reuse=True if i > 0 else None)):
         with (slim.arg_scope([slim.model_variable, slim.variable], device="/cpu:0" if num_gpus!=1 else "/gpu:0")):
+          tower_inputs[i].set_shape((batch_size,300,1024))
           result = model.create_model(
             tower_inputs[i],
             num_frames=tower_num_frames[i],

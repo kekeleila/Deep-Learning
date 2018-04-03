@@ -85,12 +85,14 @@ def compute_output(last_pooling_layer, vocab_size):
     fc2 = tf.layers.dense(fc1, 4096, activation=tf.nn.relu)
     output = slim.fully_connected(fc2, vocab_size, activation_fn=tf.nn.sigmoid,
                                   weights_regularizer=slim.l2_regularizer(1e-8))
+    output = tf.reduce_mean(output, 1)
     return output
 
 
 class FrameLevelNNModelSingleFrame(models.BaseModel):
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
-        model_input = tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 1, 1024]), perm=[0, 2, 1])
+        batch = model_input.get_shape()[0].value
+        model_input = tf.transpose(tf.slice(model_input, [0, 0, 0], [batch, 1, 1024]), perm=[0, 2, 1])
         pool3 = create_1Dlayers(model_input)
         output = compute_output(pool3, vocab_size)
         return {"predictions": output}
@@ -141,7 +143,6 @@ class FrameLevelNNModelLateFusion(models.BaseModel):
         late_frame_output = create_1Dlayers(late_frame)
         fc_input = tf.concat([start_frame_output, late_frame_output], 1)
         output = compute_output(fc_input, vocab_size)
-
         return {"predictions": output}
 
 
