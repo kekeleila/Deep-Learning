@@ -53,14 +53,14 @@ def create_1Dlayers(layer_input):
                              activation=tf.nn.relu)
     norm1 = tf.nn.local_response_normalization(tf.expand_dims(conv1, 3), 5, 2, 10e-4, 0.5)
     norm1 = tf.squeeze(norm1, 3)
-    pool1 = tf.layers.max_pooling1d(norm1, pool_size=2, strides=2)
-    conv2 = tf.layers.conv1d(pool1, kernel_size=5, filters=256, strides=1, padding='SAME', activation=tf.nn.relu)
+    #pool1 = tf.layers.max_pooling1d(norm1, pool_size=2, strides=2)
+    conv2 = tf.layers.conv1d(norm1, kernel_size=5, filters=256, strides=2, padding='SAME', activation=tf.nn.relu)
     norm2 = tf.nn.local_response_normalization(tf.expand_dims(conv2, 3), 5, 2, 10e-4, 0.5)
     norm2 = tf.squeeze(norm2, 3)
-    pool2 = tf.layers.max_pooling1d(norm2, pool_size=2, strides=2)
-    conv3 = tf.layers.conv1d(pool2, kernel_size=3, filters=384, strides=1, padding='SAME', activation=tf.nn.relu)
-    conv4 = tf.layers.conv1d(conv3, kernel_size=3, filters=384, strides=1, padding='SAME', activation=tf.nn.relu)
-    conv5 = tf.layers.conv1d(conv4, kernel_size=3, filters=256, strides=1, padding='SAME', activation=tf.nn.relu)
+    #pool2 = tf.layers.max_pooling1d(norm2, pool_size=2, strides=2)
+    conv3 = tf.layers.conv1d(norm2, kernel_size=3, filters=384, strides=2, padding='SAME', activation=tf.nn.relu)
+    conv4 = tf.layers.conv1d(conv3, kernel_size=3, filters=384, strides=2, padding='SAME', activation=tf.nn.relu)
+    conv5 = tf.layers.conv1d(conv4, kernel_size=3, filters=256, strides=2, padding='SAME', activation=tf.nn.relu)
     pool3 = tf.layers.max_pooling1d(conv5, pool_size=2, strides=2)
     return pool3
 
@@ -92,7 +92,7 @@ def compute_output(last_pooling_layer, vocab_size):
 class FrameLevelNNModelSingleFrame(models.BaseModel):
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
         batch = model_input.get_shape()[0].value
-        model_input = tf.transpose(tf.slice(model_input, [0, 0, 0], [batch, 1, 1024]), perm=[0, 2, 1])
+        model_input = tf.transpose(tf.slice(model_input, [0, 100, 0], [batch, 1, 1024]), perm=[0, 2, 1])
         pool3 = create_1Dlayers(model_input)
         output = compute_output(pool3, vocab_size)
         return {"predictions": output}
@@ -100,9 +100,9 @@ class FrameLevelNNModelSingleFrame(models.BaseModel):
 
 class FrameLevelNNModelSingleFrame2D(models.BaseModel):
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
-
-        model_input = tf.reshape(tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 1, 1024]), perm=[0, 2, 1]),
-                                 [1, 32, 32, 1])
+        batch = model_input.get_shape()[0].value
+        model_input = tf.reshape(tf.transpose(tf.slice(model_input, [0, 100, 0], [batch, 1, 1024]), perm=[0, 2, 1]),
+                                 [batch, 32, 32, 1])
         pool3 = create_2Dlayers(model_input)
         output = compute_output(pool3, vocab_size)
         return {"predictions": output}
@@ -110,26 +110,26 @@ class FrameLevelNNModelSingleFrame2D(models.BaseModel):
 class FrameLevelRNN(models.BaseModel):
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
         rnn_input = []
+        batch = model_input.get_shape()[0].value
         for i in range(40):
-            frame = tf.transpose(tf.slice(model_input, [0, i, 0], [1, 1, 1024]), perm=[0, 2, 1])
-            pool = create_1Dlayers(frame)
-            rnn_input.append(pool)
-        rnn_input = tf.squeeze(rnn_input,1)
+            frame = tf.transpose(tf.slice(model_input, [0, 100+i, 0], [batch, 1, 1024]), perm=[0, 2, 1])
+            #pool = create_1Dlayers(frame)
+            rnn_input.append(frame)
+        rnn_input = tf.squeeze(rnn_input,3)
         nodes = tf.contrib.rnn.BasicLSTMCell(384)
         rnn_input = tf.unstack(rnn_input)
         output, final_state = tf.contrib.rnn.static_rnn(cell=nodes,dtype=tf.float32,
                            inputs=rnn_input)
         output = tf.stack(output)
-        output = output[:,-1,:]
+        output = output[-1,:,:]
         output = tf.layers.dense(output, vocab_size, activation=tf.nn.relu)
         return {"predictions": output}
 
 
-
-
 class FrameLevelNNModelEarlyFusion(models.BaseModel):
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
-        model_input = tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 10, 1024]), perm=[0, 2, 1])
+        batch = model_input.get_shape()[0].value
+        model_input = tf.transpose(tf.slice(model_input, [0, 100, 0], [batch, 10, 1024]), perm=[0, 2, 1])
         pool3 = create_1Dlayers(model_input)
         output = compute_output(pool3, vocab_size)
         return {"predictions": output}
@@ -137,8 +137,9 @@ class FrameLevelNNModelEarlyFusion(models.BaseModel):
 
 class FrameLevelNNModelLateFusion(models.BaseModel):
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
-        start_frame = tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 1, 1024]), perm=[0, 2, 1])
-        late_frame = tf.transpose(tf.slice(model_input, [0, 14, 0], [1, 1, 1024]), perm=[0, 2, 1])
+        batch = model_input.get_shape()[0].value
+        start_frame = tf.transpose(tf.slice(model_input, [0, 100, 0], [batch, 1, 1024]), perm=[0, 2, 1])
+        late_frame = tf.transpose(tf.slice(model_input, [0, 114, 0], [batch, 1, 1024]), perm=[0, 2, 1])
         start_frame_output = create_1Dlayers(start_frame)
         late_frame_output = create_1Dlayers(late_frame)
         fc_input = tf.concat([start_frame_output, late_frame_output], 1)
@@ -157,10 +158,11 @@ class FrameLevelNNModelSlowFusion(models.BaseModel):
 
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
         bulks1Inputs = []
-        bulks1Inputs.append(tf.transpose(tf.slice(model_input, [0, 0, 0], [1, 4, 1024]), perm=[0, 2, 1]))
-        bulks1Inputs.append(tf.transpose(tf.slice(model_input, [0, 1, 0], [1, 4, 1024]), perm=[0, 2, 1]))
-        bulks1Inputs.append(tf.transpose(tf.slice(model_input, [0, 2, 0], [1, 4, 1024]), perm=[0, 2, 1]))
-        bulks1Inputs.append(tf.transpose(tf.slice(model_input, [0, 3, 0], [1, 4, 1024]), perm=[0, 2, 1]))
+        batch = model_input.get_shape()[0].value
+        bulks1Inputs.append(tf.transpose(tf.slice(model_input, [0, 100, 0], [batch, 4, 1024]), perm=[0, 2, 1]))
+        bulks1Inputs.append(tf.transpose(tf.slice(model_input, [0, 101, 0], [batch, 4, 1024]), perm=[0, 2, 1]))
+        bulks1Inputs.append(tf.transpose(tf.slice(model_input, [0, 102, 0], [batch, 4, 1024]), perm=[0, 2, 1]))
+        bulks1Inputs.append(tf.transpose(tf.slice(model_input, [0, 103, 0], [batch, 4, 1024]), perm=[0, 2, 1]))
         bulks1 = []
         for input in bulks1Inputs:
             bulks1.append(self.layerBulk(input))
